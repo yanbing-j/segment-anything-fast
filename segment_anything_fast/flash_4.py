@@ -328,6 +328,58 @@ def _attention_rel_h_rel_w_kernel_aligned(q, k, v, rel_h_w, sm_scale):
 
     return o
 
+@torch.library.impl(lib, "custom_flash_aligned", "CPU")
+def _attention_rel_h_rel_w_kernel_aligned(q, k, v, rel_h_w, sm_scale):
+    # This is likely not needed, but without it the kernel
+    # is guaranteed to fail. If the inputs are already contiguous
+    # these are cheap checks via is_contiguous and do nothing.
+    q = q.contiguous()
+    k = k.contiguous()
+    v = v.contiguous()
+    # shape constraints
+    Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
+    assert Lq == Lk and Lk == Lv
+    assert Lk in {16, 32, 64, 128}
+    o = torch.empty_like(q, memory_format=torch.contiguous_format)
+
+    global BEST_CONFIGS
+    if BEST_CONFIGS is None:
+        BEST_CONFIGS = _load_best_configs()
+    # Loading must have not been successful. Let's create a new dictionary.
+    if BEST_CONFIGS is None:
+        BEST_CONFIGS = {}
+    key = _create_best_configs_key(q, k, v, rel_h_w, o)
+    if key not in BEST_CONFIGS:
+        print("key ", key, " not found. Running autotune. This might take a while.")
+        import functools
+        import itertools
+        configs = []
+        for (BLOCK_M, BLOCK_N, num_warps) in itertools.product([64, 128], [64, 128], [1, 2, 4, 8]):
+            for num_stages in range(1, num_warps + 1):
+                configs.append((BLOCK_M, BLOCK_N, num_warps, num_stages))
+        print("all configs len: ", len(configs))
+        best, best_config = _autotune(configs, functools.partial(_attention_rel_h_rel_w_kernel_aligned_device,
+                                                                 q, k, v, rel_h_w, sm_scale, o))
+        BEST_CONFIGS[key] = best_config
+        print("Found best_config ", best_config,
+              " with time ", best, " for key ", key)
+        _save_best_configs(BEST_CONFIGS)
+    best_config = BEST_CONFIGS[key]
+    if best_config is None:
+        return torch.tensor([])
+
+    _attention_rel_h_rel_w_kernel_aligned_device(q,
+                                                 k,
+                                                 v,
+                                                 rel_h_w,
+                                                 sm_scale,
+                                                 o,
+                                                 best_config[0],
+                                                 best_config[1],
+                                                 best_config[2],
+                                                 best_config[3])
+
+    return o
 
 USE_CUSTOM_KERNEL = bool(int(os.environ.get('SEGMENT_ANYTHING_FAST_USE_FLASH_4', 1)))
 
