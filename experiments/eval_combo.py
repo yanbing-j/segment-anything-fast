@@ -140,10 +140,12 @@ def build_results_batch(predictor, batch, batch_size, pad_input_image_batch):
 
     with torch.autograd.profiler.record_function("timed region"):
         with torch.autograd.profiler.record_function("image encoder"):
+            print("is image encoder")
             features_batch = encoder(input_image_batch)
             features_batch = features_batch[:orig_input_image_batch_size]
 
         with torch.autograd.profiler.record_function("predict_torch"):
+            print("is predict torch")
             result_batch = []
             for batch_idx, (anns, image, input_size, idx, coords, gt_masks) in enumerate(datapoints):
                 features = features_batch.narrow(0, batch_idx, 1)
@@ -209,6 +211,7 @@ def build_results(batched_data_iter,
                         predictor.model.image_encoder = torch.compile(predictor.model.image_encoder, mode=use_compile, fullgraph=use_fullgraph)
                     # Run first batch a few times for warmup and exclude it from the final timings
                     for _ in range(3):
+                        print("iteration ")
                         _ = batch_runner(predictor, batch, batch_size, pad_input_image_batch)
             result_batch, num_datapoints, kernel_time = batch_runner(predictor, batch, batch_size, pad_input_image_batch)
             if result_batch is not None:

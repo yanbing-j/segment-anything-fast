@@ -105,11 +105,13 @@ class ImageEncoderViT(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        print("in ImageEncoderViT forward")
         x = self.patch_embed(x)
         if self.pos_embed is not None:
             x = x + self.pos_embed
 
         for blk in self.blocks:
+            print("in ImageEncoderViT forward blk")
             x = blk(x)
 
         x = self.neck(x.permute(0, 3, 1, 2))
@@ -165,21 +167,27 @@ class Block(nn.Module):
         self.window_size = window_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        print("in Block forward")
         shortcut = x
         x = self.norm1(x)
+        print("in Block forward 1")
         # Window partition
         if self.window_size > 0:
             H, W = x.shape[1], x.shape[2]
             x, pad_hw = window_partition(x, self.window_size)
 
+        print("in Block forward 2")
         x = self.attn(x)
+        print("in Block forward 3")
         # Reverse window partition
         if self.window_size > 0:
             x = window_unpartition(x, self.window_size, pad_hw, (H, W))
 
+        print("in Block forward 4")
         x = shortcut + x
         x = x + self.mlp(self.norm2(x))
 
+        print("in Block forward 5")
         return x
 
 
@@ -224,6 +232,7 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, _ = x.shape
+        print("attention B H W ", B, H, W)
         # qkv with shape (3, B, nHead, H * W, C)
         qkv = self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         # q, k, v with shape (B * nHead, H * W, C)
@@ -232,6 +241,7 @@ class Attention(nn.Module):
         rel_h, rel_w = None, None
         if self.use_rel_pos:
             rel_h, rel_w = add_decomposed_rel_pos(q, self.rel_pos_h, self.rel_pos_w, (H, W), (H, W))
+            print(q.shape, self.rel_pos_h.shape, self.rel_pos_w.shape, rel_h.shape, rel_w.shape)
 
         q = q.view(B, self.num_heads, H * W, -1)
         k = k.view(B, self.num_heads, H * W, -1)
@@ -242,6 +252,7 @@ class Attention(nn.Module):
             rel_w = rel_w.view(B, self.num_heads, rel_w.size(1), rel_w.size(2), rel_w.size(3))
             # attn_bias = (rel_h + rel_w).view(B, self.num_heads, rel_h.size(2), rel_h.size(3) * rel_w.size(4))
             # x = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias)
+            print("before calling _attention_rel_h_rel_w")
             x = _attention_rel_h_rel_w(q, k, v, rel_h, rel_w)
         else:
             x = torch.nn.functional.scaled_dot_product_attention(q, k, v)

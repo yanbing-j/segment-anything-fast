@@ -328,63 +328,66 @@ def _attention_rel_h_rel_w_kernel_aligned(q, k, v, rel_h_w, sm_scale):
 
     return o
 
-@torch.library.impl(lib, "custom_flash_aligned", "CPU")
-def _attention_rel_h_rel_w_kernel_aligned(q, k, v, rel_h_w, sm_scale):
-    # This is likely not needed, but without it the kernel
-    # is guaranteed to fail. If the inputs are already contiguous
-    # these are cheap checks via is_contiguous and do nothing.
-    q = q.contiguous()
-    k = k.contiguous()
-    v = v.contiguous()
-    # shape constraints
-    Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
-    assert Lq == Lk and Lk == Lv
-    assert Lk in {16, 32, 64, 128}
-    o = torch.empty_like(q, memory_format=torch.contiguous_format)
+# @torch.library.impl(lib, "custom_flash_aligned", "CPU")
+# def _attention_rel_h_rel_w_kernel_aligned(q, k, v, rel_h_w, sm_scale):
+#     # import pdb
+#     # pdb.set_trace()
+#     # This is likely not needed, but without it the kernel
+#     # is guaranteed to fail. If the inputs are already contiguous
+#     # these are cheap checks via is_contiguous and do nothing.
+#     q = q.contiguous()
+#     k = k.contiguous()
+#     v = v.contiguous()
+#     # shape constraints
+#     Lq, Lk, Lv = q.shape[-1], k.shape[-1], v.shape[-1]
+#     assert Lq == Lk and Lk == Lv
+#     assert Lk in {16, 32, 64, 128}
+#     o = torch.empty_like(q, memory_format=torch.contiguous_format)
 
-    global BEST_CONFIGS
-    if BEST_CONFIGS is None:
-        BEST_CONFIGS = _load_best_configs()
-    # Loading must have not been successful. Let's create a new dictionary.
-    if BEST_CONFIGS is None:
-        BEST_CONFIGS = {}
-    key = _create_best_configs_key(q, k, v, rel_h_w, o)
-    if key not in BEST_CONFIGS:
-        print("key ", key, " not found. Running autotune. This might take a while.")
-        import functools
-        import itertools
-        configs = []
-        for (BLOCK_M, BLOCK_N, num_warps) in itertools.product([64, 128], [64, 128], [1, 2, 4, 8]):
-            for num_stages in range(1, num_warps + 1):
-                configs.append((BLOCK_M, BLOCK_N, num_warps, num_stages))
-        print("all configs len: ", len(configs))
-        best, best_config = _autotune(configs, functools.partial(_attention_rel_h_rel_w_kernel_aligned_device,
-                                                                 q, k, v, rel_h_w, sm_scale, o))
-        BEST_CONFIGS[key] = best_config
-        print("Found best_config ", best_config,
-              " with time ", best, " for key ", key)
-        _save_best_configs(BEST_CONFIGS)
-    best_config = BEST_CONFIGS[key]
-    if best_config is None:
-        return torch.tensor([])
+#     global BEST_CONFIGS
+#     if BEST_CONFIGS is None:
+#         BEST_CONFIGS = _load_best_configs()
+#     # Loading must have not been successful. Let's create a new dictionary.
+#     if BEST_CONFIGS is None:
+#         BEST_CONFIGS = {}
+#     key = _create_best_configs_key(q, k, v, rel_h_w, o)
+#     if key not in BEST_CONFIGS:
+#         print("key ", key, " not found. Running autotune. This might take a while.")
+#         import functools
+#         import itertools
+#         configs = []
+#         for (BLOCK_M, BLOCK_N, num_warps) in itertools.product([64, 128], [64, 128], [1, 2, 4, 8]):
+#             for num_stages in range(1, num_warps + 1):
+#                 configs.append((BLOCK_M, BLOCK_N, num_warps, num_stages))
+#         print("all configs len: ", len(configs))
+#         best, best_config = _autotune(configs, functools.partial(_attention_rel_h_rel_w_kernel_aligned_device,
+#                                                                  q, k, v, rel_h_w, sm_scale, o))
+#         BEST_CONFIGS[key] = best_config
+#         print("Found best_config ", best_config,
+#               " with time ", best, " for key ", key)
+#         _save_best_configs(BEST_CONFIGS)
+#     best_config = BEST_CONFIGS[key]
+#     if best_config is None:
+#         return torch.tensor([])
 
-    _attention_rel_h_rel_w_kernel_aligned_device(q,
-                                                 k,
-                                                 v,
-                                                 rel_h_w,
-                                                 sm_scale,
-                                                 o,
-                                                 best_config[0],
-                                                 best_config[1],
-                                                 best_config[2],
-                                                 best_config[3])
+#     _attention_rel_h_rel_w_kernel_aligned_device(q,
+#                                                  k,
+#                                                  v,
+#                                                  rel_h_w,
+#                                                  sm_scale,
+#                                                  o,
+#                                                  best_config[0],
+#                                                  best_config[1],
+#                                                  best_config[2],
+#                                                  best_config[3])
 
-    return o
+#     return o
 
 USE_CUSTOM_KERNEL = bool(int(os.environ.get('SEGMENT_ANYTHING_FAST_USE_FLASH_4', 1)))
 
 
 def _attention_rel_h_rel_w(q_, k_, v_, rel_h_, rel_w_):
+    print("in _attention_rel_h_rel_w")
     """
     Writing this as a composite allows torch.compile to fuse
     the needed padding into previous operations and memory
@@ -400,7 +403,10 @@ def _attention_rel_h_rel_w(q_, k_, v_, rel_h_, rel_w_):
         return (q_.dtype == torch.bfloat16 or q_.dtype == torch.float16) and q_.dtype == k_.dtype and k_.dtype == v_.dtype and USE_CUSTOM_KERNEL
     # vit_b and vit_l
     # TODO: This kernel currently does not produce correct results for batch size 1 for this case
+    print(q_.size(0), " ", q_size_2_padded, " ", q_.size(-1), " ", kernel_guards(q_, k_, v_))
+    print(q_.shape, k_.shape, v_.shape, rel_h_.shape, rel_w_.shape)
     if q_.size(0) > 1 and q_size_2_padded == 0 and q_.size(-1) == 64 and kernel_guards(q_, k_, v_):
+        print("do flash_4")
         rel_h_w = torch.cat([rel_h_.squeeze(-1), rel_w_.squeeze(-2)], dim=-1)
         o = torch.ops.customflash.custom_flash_aligned(
             q_, k_, v_, rel_h_w, sm_scale)
@@ -417,6 +423,7 @@ def _attention_rel_h_rel_w(q_, k_, v_, rel_h_, rel_w_):
             q, k, v, rel_h_w, sm_scale)
         if o.numel() > 0:
             return o[:, :, :, :80]
+    print("do native sdpa")
     attn_bias = (rel_h_ + rel_w_).view(q_.size(0), q_.size(1),
                                        rel_h_.size(2), rel_h_.size(3) * rel_w_.size(4))
     return torch.nn.functional.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_bias)
